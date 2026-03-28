@@ -1,0 +1,30 @@
+# Environment variables
+.env
+
+# Database
+*.db
+manicure.db
+data.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+.env.bak
+.venv/
+
+# Logs
+*.log
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
