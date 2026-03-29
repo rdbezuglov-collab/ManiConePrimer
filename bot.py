@@ -20,29 +20,6 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Словарь для хранения статуса подписки (кэш)
-subscription_status = {}
-
-def is_subscribed(user_id):
-    """Проверяет статус подписки из кэша"""
-    return subscription_status.get(user_id, False)
-
-def check_and_save_subscription(user_id):
-    """Проверяет подписку и сохраняет результат в кэш"""
-    try:
-        if not CHANNEL_ID or CHANNEL_ID == "":
-            subscription_status[user_id] = True
-            return True
-        
-        member = bot.get_chat_member(CHANNEL_ID, user_id)
-        status = member.status in ['member', 'administrator', 'creator']
-        subscription_status[user_id] = status
-        return status
-    except Exception as e:
-        print(f"Ошибка проверки подписки: {e}")
-        subscription_status[user_id] = False
-        return False
-
 # ========== ДАННЫЕ ДЛЯ УСЛУГ ==========
 SERVICES = {
     "french": {
@@ -196,6 +173,10 @@ init_db()
 create_slots()
 ensure_future_slots()
 print("=" * 50)
+
+# ========== ПРОВЕРКА ПОДПИСКИ ==========
+def check_subscription(user_id):
+    return True  # Временно для теста
 
 # ========== КЛАВИАТУРЫ ==========
 def main_menu(user_id=None):
@@ -583,12 +564,11 @@ def admin_custom_date_keyboard(month_offset=0):
     markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin"))
     return markup
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
     
-    # Сохраняем пользователя
     try:
         conn = sqlite3.connect('manicure.db')
         cursor = conn.cursor()
@@ -601,8 +581,7 @@ def start(message):
     except Exception as e:
         print(f"Ошибка при сохранении пользователя: {e}")
     
-    # Проверяем подписку ТОЛЬКО ПРИ СТАРТЕ
-    if check_and_save_subscription(user_id):
+    if check_subscription(user_id):
         bot.send_message(
             message.chat.id,
             f"👋 Здравствуйте, {message.from_user.first_name}!\n\n"
@@ -613,14 +592,14 @@ def start(message):
     else:
         bot.send_message(
             message.chat.id,
-            f"👋 Здравствуйте, {message.from_user.first_name}!\n\n"
-            f"🔒 Для доступа к боту подпишитесь на канал:\n{CHANNEL_URL}",
+            f"👋 Здравствуйте!\n\n"
+            f"🔒 Для записи подпишитесь на канал:",
             reply_markup=sub_keyboard()
         )
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
 def check_sub_callback(call):
-    if check_and_save_subscription(call.from_user.id):
+    if check_subscription(call.from_user.id):
         bot.delete_message(call.message.chat.id, call.message.message_id)
         bot.send_message(
             call.message.chat.id,
@@ -630,8 +609,6 @@ def check_sub_callback(call):
         )
     else:
         bot.answer_callback_query(call.id, "❌ Вы не подписались!", show_alert=True)
-
-# ========== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (без проверки подписки) ==========
 
 # Словари для хранения offset
 calendar_offsets = {}
@@ -680,25 +657,16 @@ def calendar_prev_month(call):
 def book(message):
     user_id = message.from_user.id
     
-    # Проверяем статус подписки из кэша
-    if not is_subscribed(user_id):
-        bot.send_message(
-            message.chat.id,
-            f"🔒 Для записи сначала подпишитесь на канал:\n{CHANNEL_URL}",
-            reply_markup=sub_keyboard()
-        )
-        return
-    
-    # Очищаем временные данные
+    # Очищаем старые временные данные
     conn = sqlite3.connect('manicure.db')
     cursor = conn.cursor()
     cursor.execute("DELETE FROM temp WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
     
-    # Сбрасываем offset
-    if user_id in calendar_offsets:
-        del calendar_offsets[user_id]
+    if not check_subscription(user_id):
+        bot.send_message(message.chat.id, "❌ Сначала подпишитесь!", reply_markup=sub_keyboard())
+        return
     
     conn = sqlite3.connect('manicure.db')
     cursor = conn.cursor()
@@ -707,11 +675,7 @@ def book(message):
     conn.close()
     
     if exists:
-        bot.send_message(
-            message.chat.id,
-            "❌ У вас уже есть активная запись!\n"
-            "Используйте кнопку 'Отменить запись' в меню."
-        )
+        bot.send_message(message.chat.id, "❌ У вас уже есть активная запись!")
         return
     
     bot.send_message(
@@ -720,119 +684,16 @@ def book(message):
         reply_markup=calendar_keyboard(0)
     )
 
-@bot.message_handler(func=lambda message: message.text == "💰 Прайсы")
-def prices(message):
-    user_id = message.from_user.id
-    
-    # Проверяем статус подписки из кэша
-    if not is_subscribed(user_id):
-        bot.send_message(
-            message.chat.id,
-            f"🔒 Для просмотра прайсов сначала подпишитесь на канал:\n{CHANNEL_URL}",
-            reply_markup=sub_keyboard()
-        )
-        return
-    
-    bot.send_message(
-        message.chat.id,
-        "💰 <b>Наши услуги</b>\n\n"
-        "Нажмите на услугу, чтобы увидеть фото и описание:",
-        reply_markup=services_keyboard(),
-        parse_mode="HTML"
-    )
-
-@bot.message_handler(func=lambda message: message.text == "📷 Портфолио")
-def portfolio(message):
-    user_id = message.from_user.id
-    
-    # Проверяем статус подписки из кэша
-    if not is_subscribed(user_id):
-        bot.send_message(
-            message.chat.id,
-            f"🔒 Для просмотра портфолио сначала подпишитесь на канал:\n{CHANNEL_URL}",
-            reply_markup=sub_keyboard()
-        )
-        return
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton(
-        "📸 Смотреть портфолио",
-        url="https://t.me/portfolioprimeer"
-    ))
-    bot.send_message(
-        message.chat.id,
-        "📷 <b>Наше портфолио</b>\n\n"
-        "Все наши работы в Telegram канале:",
-        reply_markup=markup,
-        parse_mode="HTML"
-    )
-
-@bot.message_handler(func=lambda message: message.text == "❌ Отменить запись")
-def cancel_booking(message):
-    user_id = message.from_user.id
-    
-    # Проверяем статус подписки из кэша
-    if not is_subscribed(user_id):
-        bot.send_message(
-            message.chat.id,
-            f"🔒 Для отмены записи сначала подпишитесь на канал:\n{CHANNEL_URL}",
-            reply_markup=sub_keyboard()
-        )
-        return
-    
-    conn = sqlite3.connect('manicure.db')
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT date, time, service FROM bookings WHERE user_id = ?", (user_id,))
-    booking = cursor.fetchone()
-    
-    if booking:
-        date, time, service = booking
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton("✅ Да, отменить", callback_data="confirm_cancel"),
-            types.InlineKeyboardButton("❌ Нет, оставить", callback_data="back_to_main")
-        )
-        
-        bot.send_message(
-            message.chat.id,
-            f"❓ <b>Подтверждение отмены</b>\n\n"
-            f"💅 Услуга: {service}\n"
-            f"📅 Дата: {date}\n"
-            f"⏰ Время: {time}\n\n"
-            f"Вы уверены, что хотите отменить запись?",
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
-    else:
-        bot.send_message(message.chat.id, "❌ У вас нет активной записи")
-    
-    conn.close()
-
-# ========== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (продолжение) ==========
-
-@bot.callback_query_handler(func=lambda call: call.data == "back_to_calendar")
-def back_to_calendar(call):
-    user_id = call.from_user.id
-    current_offset = calendar_offsets.get(user_id, 0)
-    bot.edit_message_text(
-        "📅 Выберите дату:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=calendar_keyboard(current_offset)
-    )
-    bot.answer_callback_query(call.id)
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith('cal_date_'))
 def calendar_date_selected(call):
+    user_id = call.from_user.id
     date = call.data.replace('cal_date_', '')
     
     conn = sqlite3.connect('manicure.db')
     cursor = conn.cursor()
     cursor.execute(
         "INSERT OR REPLACE INTO temp (user_id, date) VALUES (?, ?)",
-        (call.from_user.id, date)
+        (user_id, date)
     )
     conn.commit()
     conn.close()
@@ -846,24 +707,25 @@ def calendar_date_selected(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('time_'))
 def time_choice(call):
+    user_id = call.from_user.id
     _, day_offset, time = call.data.split('_')
     date = (datetime.now() + timedelta(days=int(day_offset))).strftime("%d.%m.%Y")
     
     conn = sqlite3.connect('manicure.db')
     cursor = conn.cursor()
     
-    cursor.execute("SELECT date FROM temp WHERE user_id = ?", (call.from_user.id,))
+    cursor.execute("SELECT date FROM temp WHERE user_id = ?", (user_id,))
     temp_data = cursor.fetchone()
     
     if temp_data:
         cursor.execute(
             "UPDATE temp SET time = ? WHERE user_id = ?",
-            (time, call.from_user.id)
+            (time, user_id)
         )
     else:
         cursor.execute(
             "INSERT INTO temp (user_id, date, time) VALUES (?, ?, ?)",
-            (call.from_user.id, date, time)
+            (user_id, date, time)
         )
     
     conn.commit()
@@ -873,9 +735,32 @@ def time_choice(call):
         call.message.chat.id,
         "✏️ Введите ваше имя:"
     )
-    bot.register_next_step_handler(msg, get_phone, call.from_user.id)
+    bot.register_next_step_handler(msg, get_phone, user_id)
 
+    # ========== ПОЛУЧЕНИЕ ИМЕНИ И ТЕЛЕФОНА ==========
 def get_phone(message, user_id):
+    # Проверяем, не является ли сообщение командой или кнопкой меню
+    if message.text in ["📅 Записаться", "💰 Прайсы", "📷 Портфолио", "⚙️ Админ", "❌ Отменить запись"]:
+        # Если это кнопка меню - очищаем временные данные и обрабатываем команду
+        conn = sqlite3.connect('manicure.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM temp WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        
+        # Перенаправляем на обработку кнопки
+        if message.text == "💰 Прайсы":
+            prices(message)
+        elif message.text == "📷 Портфолио":
+            portfolio(message)
+        elif message.text == "⚙️ Админ":
+            admin_panel(message)
+        elif message.text == "❌ Отменить запись":
+            cancel_booking(message)
+        elif message.text == "📅 Записаться":
+            book(message)
+        return
+    
     name = message.text
     
     conn = sqlite3.connect('manicure.db')
@@ -894,6 +779,28 @@ def get_phone(message, user_id):
     bot.register_next_step_handler(msg, confirm_phone_first, user_id)
 
 def confirm_phone_first(message, user_id):
+    # Проверяем, не является ли сообщение командой или кнопкой меню
+    if message.text in ["📅 Записаться", "💰 Прайсы", "📷 Портфолио", "⚙️ Админ", "❌ Отменить запись"]:
+        # Если это кнопка меню - очищаем временные данные и обрабатываем команду
+        conn = sqlite3.connect('manicure.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM temp WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        
+        # Перенаправляем на обработку кнопки
+        if message.text == "💰 Прайсы":
+            prices(message)
+        elif message.text == "📷 Портфолио":
+            portfolio(message)
+        elif message.text == "⚙️ Админ":
+            admin_panel(message)
+        elif message.text == "❌ Отменить запись":
+            cancel_booking(message)
+        elif message.text == "📅 Записаться":
+            book(message)
+        return
+    
     phone1 = message.text.strip()
     
     if len(phone1) < 10:
@@ -921,7 +828,29 @@ def confirm_phone_first(message, user_id):
     )
     bot.register_next_step_handler(msg, confirm_phone_second, user_id, phone1)
 
-def confirm_phone_second(message, user_id, phone1):
+    def confirm_phone_second(message, user_id, phone1):
+    # Проверяем, не является ли сообщение командой или кнопкой меню
+     if message.text in ["📅 Записаться", "💰 Прайсы", "📷 Портфолио", "⚙️ Админ", "❌ Отменить запись"]:
+        # Если это кнопка меню - очищаем временные данные и обрабатываем команду
+        conn = sqlite3.connect('manicure.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM temp WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        
+        # Перенаправляем на обработку кнопки
+        if message.text == "💰 Прайсы":
+            prices(message)
+        elif message.text == "📷 Портфолио":
+            portfolio(message)
+        elif message.text == "⚙️ Админ":
+            admin_panel(message)
+        elif message.text == "❌ Отменить запись":
+            cancel_booking(message)
+        elif message.text == "📅 Записаться":
+            book(message)
+        return
+    
     phone2 = message.text.strip()
     
     if phone1 == phone2:
@@ -944,7 +873,29 @@ def confirm_phone_second(message, user_id, phone1):
             reply_markup=main_menu(user_id)
         )
 
-def save_booking(message, user_id, phone):
+        def save_booking(message, user_id, phone):
+    # Проверяем, не является ли сообщение командой или кнопкой меню
+         if message.text in ["📅 Записаться", "💰 Прайсы", "📷 Портфолио", "⚙️ Админ", "❌ Отменить запись"]:
+        # Если это кнопка меню - очищаем временные данные и обрабатываем команду
+          conn = sqlite3.connect('manicure.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM temp WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        
+        # Перенаправляем на обработку кнопки
+        if message.text == "💰 Прайсы":
+            prices(message)
+        elif message.text == "📷 Портфолио":
+            portfolio(message)
+        elif message.text == "⚙️ Админ":
+            admin_panel(message)
+        elif message.text == "❌ Отменить запись":
+            cancel_booking(message)
+        elif message.text == "📅 Записаться":
+            book(message)
+        return
+    
     conn = sqlite3.connect('manicure.db')
     cursor = conn.cursor()
     
@@ -1005,6 +956,47 @@ def save_booking(message, user_id, phone):
     
     conn.close()
 
+@bot.message_handler(func=lambda message: message.text == "💰 Прайсы")
+def prices(message):
+    if not check_subscription(message.from_user.id):
+        bot.send_message(message.chat.id, "❌ Сначала подпишитесь!", reply_markup=sub_keyboard())
+        return
+    
+    bot.send_message(
+        message.chat.id,
+        "💰 <b>Наши услуги</b>\n\n"
+        "Нажмите на услугу, чтобы увидеть фото и описание:",
+        reply_markup=services_keyboard(),
+        parse_mode="HTML"
+    )
+
+@bot.message_handler(func=lambda message: message.text == "📷 Портфолио")
+def portfolio(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        "📸 Смотреть портфолио",
+        url="https://t.me/portfolioprimeer"
+    ))
+    bot.send_message(
+        message.chat.id,
+        "📷 <b>Наше портфолио</b>\n\n"
+        "Все наши работы в Telegram канале:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_calendar")
+def back_to_calendar(call):
+    user_id = call.from_user.id
+    current_offset = calendar_offsets.get(user_id, 0)
+    bot.edit_message_text(
+        "📅 Выберите дату:",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=calendar_keyboard(current_offset)
+    )
+    bot.answer_callback_query(call.id)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('service_'))
 def service_choice(call):
     service_key = call.data.replace('service_', '')
@@ -1064,6 +1056,42 @@ def back_to_services(call):
         )
     
     bot.answer_callback_query(call.id)
+
+@bot.message_handler(func=lambda message: message.text == "❌ Отменить запись")
+def cancel_booking(message):
+    if not check_subscription(message.from_user.id):
+        bot.send_message(message.chat.id, "❌ Сначала подпишитесь!", reply_markup=sub_keyboard())
+        return
+    
+    conn = sqlite3.connect('manicure.db')
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT date, time, service FROM bookings WHERE user_id = ?", (message.from_user.id,))
+    booking = cursor.fetchone()
+    
+    if booking:
+        date, time, service = booking
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("✅ Да, отменить", callback_data="confirm_cancel"),
+            types.InlineKeyboardButton("❌ Нет, оставить", callback_data="back_to_main")
+        )
+        
+        bot.send_message(
+            message.chat.id,
+            f"❓ <b>Подтверждение отмены</b>\n\n"
+            f"💅 Услуга: {service}\n"
+            f"📅 Дата: {date}\n"
+            f"⏰ Время: {time}\n\n"
+            f"Вы уверены, что хотите отменить запись?",
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
+    else:
+        bot.send_message(message.chat.id, "❌ У вас нет активной записи")
+    
+    conn.close()
 
 @bot.callback_query_handler(func=lambda call: call.data == "confirm_cancel")
 def confirm_cancel(call):
@@ -1152,7 +1180,7 @@ def admin_panel(message):
         parse_mode="HTML"
     )
 
-# ... остальные админ обработчики (админ_лист, админ_добавить_слот и т.д.) остаются без изменений ...
+# ... остальные админ обработчики (они такие же как в вашем исходном файле) ...
 
 # ========== ЗАПУСК ==========
 if __name__ == "__main__": 
